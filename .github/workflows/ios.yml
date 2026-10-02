@@ -1,0 +1,179 @@
+name: Build iOS
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_target:
+        description: What should GitHub build?
+        required: true
+        default: simulator
+        type: choice
+        options:
+          - simulator
+          - signed-ipa
+      export_method:
+        description: Export method for signed IPA
+        required: true
+        default: release-testing
+        type: choice
+        options:
+          - release-testing
+          - app-store-connect
+          - debugging
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-${{ github.ref }}-${{ inputs.build_target }}
+  cancel-in-progress: true
+
+env:
+  CI: true
+  CARGO_TERM_COLOR: always
+
+jobs:
+  simulator:
+    name: iOS Simulator (no signing)
+    if: ${{ inputs.build_target == 'simulator' }}
+    runs-on: macos-26
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios-sim
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Show Xcode version
+        run: xcodebuild -version
+
+      - name: Install JavaScript dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Initialize Tauri iOS project
+        run: npx tauri ios init --ci
+
+      - name: Build for Apple Silicon iOS Simulator
+        run: npx tauri ios build --target aarch64-sim --ci
+
+      - name: Package simulator app
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          APP_PATH="$(find src-tauri -type d -name '*.app' -not -path '*/DerivedData/*' | head -n 1 || true)"
+          if [ -z "$APP_PATH" ]; then
+            echo "No .app bundle was produced."
+            find src-tauri -maxdepth 8 -type f | sort | tail -n 200
+            exit 1
+          fi
+          echo "Found simulator app: $APP_PATH"
+          ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" artifacts/TrioSoft-Pocket-iOS-Simulator.zip
+
+      - name: Upload simulator artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: TrioSoft-Pocket-iOS-Simulator
+          path: artifacts/TrioSoft-Pocket-iOS-Simulator.zip
+          if-no-files-found: error
+          retention-days: 14
+
+  signed-ipa:
+    name: Signed iOS IPA
+    if: ${{ inputs.build_target == 'signed-ipa' }}
+    runs-on: macos-26
+    timeout-minutes: 45
+    env:
+      APPLE_DEVELOPMENT_TEAM: ${{ secrets.APPLE_DEVELOPMENT_TEAM }}
+      IOS_CERTIFICATE: ${{ secrets.IOS_CERTIFICATE }}
+      IOS_CERTIFICATE_PASSWORD: ${{ secrets.IOS_CERTIFICATE_PASSWORD }}
+      IOS_MOBILE_PROVISION: ${{ secrets.IOS_MOBILE_PROVISION }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify signing secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          missing=0
+          for name in APPLE_DEVELOPMENT_TEAM IOS_CERTIFICATE IOS_CERTIFICATE_PASSWORD IOS_MOBILE_PROVISION; do
+            if [ -z "${!name:-}" ]; then
+              echo "Missing GitHub Actions secret: $name"
+              missing=1
+            fi
+          done
+          if [ "$missing" -ne 0 ]; then
+            echo "Add the missing repository secrets and run the workflow again."
+            exit 1
+          fi
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Show Xcode version
+        run: xcodebuild -version
+
+      - name: Install JavaScript dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Initialize Tauri iOS project
+        run: npx tauri ios init --ci
+
+      - name: Build signed IPA
+        shell: bash
+        run: |
+          npx tauri ios build \
+            --ci \
+            --target aarch64 \
+            --build-number "${{ github.run_number }}" \
+            --export-method "${{ inputs.export_method }}"
+
+      - name: Collect IPA
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          IPA_PATH="$(find src-tauri -type f -name '*.ipa' | head -n 1 || true)"
+          if [ -z "$IPA_PATH" ]; then
+            echo "No .ipa file was produced."
+            find src-tauri -maxdepth 8 -type f | sort | tail -n 200
+            exit 1
+          fi
+          echo "Found IPA: $IPA_PATH"
+          cp "$IPA_PATH" artifacts/TrioSoft-Pocket.ipa
+
+      - name: Upload signed IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: TrioSoft-Pocket-signed-IPA
+          path: artifacts/TrioSoft-Pocket.ipa
+          if-no-files-found: error
+          retention-days: 14

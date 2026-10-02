@@ -1,0 +1,19 @@
+{
+  "name": "triosoft-pocket",
+  "private": true,
+  "version": "0.1.1",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0 --port 1420 --strictPort",
+    "build": "vite build",
+    "preview": "vite preview --host 0.0.0.0",
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2",
+    "vite": "^7"
+  }
+}
